@@ -4,7 +4,8 @@ use strict;
 
 use vars qw($VERSION @ISA) ;
 
-$VERSION = '0.01';
+$VERSION = '0.06';
+
 @ISA = qw(Nagios::WebTransact) ;
 
 use HTTP::Request::Common qw(GET POST) ;
@@ -28,9 +29,17 @@ use constant FAIL_RATIO_PERCENT		=> 50 ;
 sub check {
   my ($self, $cgi_parm_vals_hr) = @_ ;
 
-  my %defaults = ( cookies => TRUE, debug => TRUE, timeout => GET_TIME_THRESHOLD, agent => 'Mozilla/4.7', proxy => {},
-                   fail_if_1 => FALSE, verbose => 1, fail_ratio_percent => FAIL_RATIO_PERCENT ) ;
-
+  my %defaults = ( cookies => TRUE,
+		  debug => TRUE,
+		  timeout => GET_TIME_THRESHOLD,
+		  agent => 'Mozilla/4.7',
+		  proxy => {},
+                  fail_if_1 => FALSE,
+		  verbose => 1,
+                  download_images => FALSE,
+                  indent_level => 0,
+		  fail_ratio_percent => FAIL_RATIO_PERCENT
+		) ;
 					# check semantics.
 					# $fail_if_1  	?	return FAIL if any URL fails
 					# ! $fail_if_1	?	return FAIL if all URLs fail
@@ -38,54 +47,61 @@ sub check {
 
   my %parms = (%defaults, @_) ;
 
-  my ($res, $req, $url_r, $resp_string, $timeout) ;
-  my ($cookie_jar, $ua, $debug, $t0, $elapsed, @get_times) ;
-  my ($rounded_elapsed, @urls, $check_time, $verbose, $fail_ratio, $fail_ratio_percent ) ;
   
+  my $debug	= $parms{debug} ;
+  my $verbose	= $parms{verbose} ;
+  my $indent	= $parms{indent_level} ;
+  my $fail_ratio_percent = $parms{fail_ratio_percent}  || FAIL_RATIO_PERCENT ;
+     croak("Expecting fail_ratio_percent as a percentage (0-100%), got \$fail_ratio:_percent: $fail_ratio_percent\n")
+       if $fail_ratio_percent < 0 or $fail_ratio_percent > 100 ;
+  my $fail_ratio = $fail_ratio_percent / 100 ;
+  my $timeout	= $parms{timeout} ;
+     croak("Expecting timeout as a natural number (0 ... not_too_big), got \$timeout: $timeout.\n")
+       if $timeout < 0 ;
+
+  my ($ua, %downloaded) ; 
+  keys %downloaded = 128 ;
+
   $ua = new LWP::UserAgent ;
   $ua->agent($parms{agent}) ;
-
-  $debug = $parms{debug} ;
-  $verbose = $parms{verbose} ;
-  $fail_ratio_percent = $parms{fail_ratio_percent}  || FAIL_RATIO_PERCENT ;
-  croak("Expecting fail_ratio_percent as a percentage [0-100%], got \$fail_ratio:_percent $fail_ratio_percent\n") if $fail_ratio_percent < 0 or $fail_ratio_percent > 100 ;
-  $fail_ratio = $fail_ratio_percent / 100 ;
-  $timeout = $parms{timeout} ;
-  croak("Expecting timeout as a natural number [0 ... not_too_big], got \$timeout: $timeout.\n") if $timeout < 0 ;
-
   $ua->timeout($timeout) ;
-  $ua->cookie_jar(HTTP::Cookies->new) if $parms{cookies} ;
+  $ua->cookie_jar(HTTP::Cookies->new)
+    if $parms{cookies} ;
+  $ua->proxy(['http', 'ftp'] => $parms{proxy}{server})
+    if exists $parms{proxy}{server} ;
 
-  $ua->proxy(['http', 'ftp'] => $parms{proxy}{server}) if exists $parms{proxy}{server} ;
-
-  @urls = @{ $self->get_urls } ;
-
+  my @urls = @{ $self->{urls} } ;
   my $Fault_Threshold = int( scalar @urls * $fail_ratio + 0.5 ) * $timeout ;
+  my $check_time = 0 ;
+  my @get_times = () ;
 
-  $check_time = 0 ;
-  @get_times = () ;
-  foreach $url_r ( @urls ) {
+  foreach my $url_r ( @urls ) {
 
-    $req = $self->make_req( $url_r->{Method}, $url_r->{Url}, $url_r->{Qs_var}, $url_r->{Qs_fixed}, $cgi_parm_vals_hr ) ;
+    my $req = $self->make_req( $url_r->{Method}, $url_r->{Url}, $url_r->{Qs_var}, $url_r->{Qs_fixed}, $cgi_parm_vals_hr ) ;
 
-    $req->proxy_authorization_basic( $parms{proxy}{account}, $parms{proxy}{pass} ) if exists $parms{proxy}{account} ;
+    $req->proxy_authorization_basic( $parms{proxy}{account}, $parms{proxy}{pass} )
+      if exists $parms{proxy}{account} ;
 
-    print STDERR  "... " . $req->as_string . "\n" if $debug ;
+    print STDERR  '   ' x $indent, '... ' ,$req->as_string, "\n" if $debug ;
 
-    $t0 = [gettimeofday] ;
+    my $t0 = [gettimeofday] ;
   
-    $res = $ua->request($req) ;
+    my $res = $ua->request($req) ;
   
-    $elapsed = tv_interval ($t0) ;
-    $rounded_elapsed = ( ($elapsed < GET_TIME_THRESHOLD and $res->is_success) ? sprintf("%3.2f",  $elapsed ) : GET_TIME_THRESHOLD ) ;
+    my $elapsed = tv_interval ($t0) ;
+    my $rounded_elapsed = ( ($elapsed < GET_TIME_THRESHOLD and $res->is_success) ? sprintf('%3.2f',  $elapsed ) : GET_TIME_THRESHOLD ) ;
     push @get_times, $rounded_elapsed ;
     $check_time += $rounded_elapsed ;
 
-    print STDERR  '... ' . $res->as_string . "\n" if $debug ;
+    print STDERR '   ' x $indent,  '... ' , $res->as_string ,"\n" if $debug ;
 
     if ( $verbose ) {
-      my $url_report = '--getting ' . $url_r->{Url} ;
-      print STDERR  $url_report, ' ' x (50 - length($url_report)), "\t$rounded_elapsed\tTotal check time: $check_time\n" ;
+      my $url_report = sprintf("%-95s%10s%-5.2f%-40s\n", substr('   ' x $indent . (! $indent ? '--getting ' : '') . $url_r->{Url}, 0, 95),
+				        	      , ' ' x 10, 
+						      , $rounded_elapsed,
+						      , (! $indent  ? 'Total check time: ' 
+								    : '  image download time: ') . sprintf('%5.2f', $check_time)) ;
+      print STDERR  $url_report ;
     }
   
     unless ( $check_time <= $Fault_Threshold ) {
@@ -96,9 +112,58 @@ sub check {
       }
       return (FAIL, 'Transaction failed. Timeout', \@get_times) ;
     }
+
+    if ( $parms{download_images} ) {
+      my ($image_dl_ok, $image_dl_msg, $image_get_times_ar, $number_imgs_dl ) = &download_images($res, \%parms, \%downloaded) ;
+      return (FAIL, $image_dl_msg)
+        unless $image_dl_ok ;
+      $self->{number_of_images_downloaded} += $number_imgs_dl ;
+      $get_times[-1] += $_
+        foreach @$image_get_times_ar ;
+      # &download_images() will call check() which returns here the list of image download times in @$image_get_times_ar.
+      # Each elt in this list is added to the last html download time ($get_times[-1]) leaving @get_times containing
+      # the total download time for the page (downloaded sequentially and without heed to 'if modified' headers).
+      printf "%137s%5.2f\n", 'Total page download time: ', $get_times[-1] 
+        if $verbose ;
+    }
   
   }
   return (OK, 'Transaction completed Ok.', \@get_times) ;
+}
+
+sub download_images {
+
+  my ($res, $parms_hr, $downloaded_hr)  = @_ ;
+
+  require HTML::LinkExtor ;
+  require URI::URL ;
+  URI::URL->import(qw(url)) ;
+
+  my @imgs = () ;
+
+  my $cb = sub {
+      my($tag, %attr) = @_;
+      return if $tag ne 'img';  # we only look closer at <img ...>
+      push(@imgs, $attr{src});
+  } ;
+
+  my $p = HTML::LinkExtor->new($cb) ;
+  $p->parse($res->as_string) ;
+
+  my $base = $res->base;
+  my @imgs_abs = grep ! $downloaded_hr->{$_}++, map { my $x = url($_, $base)->abs; } @imgs;
+
+  my @img_urls = map { Method => 'GET', Url => $_->as_string, Qs_var => [], Qs_fixed => [], Exp => '.',  Exp_Fault => 'NeverInAnImage' }, @imgs_abs ;
+                                                # url() returns an array ref containing the abs url and the base.
+  if ( my $number_of_images_not_already_downloaded =scalar @img_urls ) {
+    # If there are no images that have not been downloaded, then don't try to call ->check([]) since it will return FAIL.
+    my $img_trx = __PACKAGE__->new(\@img_urls) ;
+    my %image_dl_parms = (%$parms_hr, fail_if_1 => FALSE, download_images => FALSE, indent_level => 1) ; 
+    return ( $img_trx->check({}, %image_dl_parms), $number_of_images_not_already_downloaded ) ;
+  } else {
+    return (OK, 'Downloaded all __zero__ images found in ' . $res->base, [], 0) ;
+  }
+
 }
   
 1 ;
@@ -194,7 +259,11 @@ B<fail_ratio_percent> specifies that the check will return immediately (with a f
 (ie if HTTP::Response::is_success says it is or a timeout) as a percentage, is greater than this threshold.
 eg if fail_ratio_percent is 100, fetching all the URls must fail before the check returns false.
 
-B<verbose> is meant for CLI use (or in a CGI). It reports the time taken for each URL on standard out.
+B<verbose> is meant for CLI use (or in a CGI). It reports the time taken for each URL on standard B<error>.
+
+B<download_images> is meant for CLI use (or in a CGI). It reports the time taken to download each of the images found
+in the page provided that image has not been downloaded by the Nagios::WebTransact object session. Download time is
+displayed on standard B<error>.
 
 check returns a boolean indication of success and a reference to an array containing the time taken for each URL.
 If a URL cannot be download (invalid content, HTTP failure or timeout), the time is marked as 10. 
@@ -206,6 +275,19 @@ If a URL cannot be download (invalid content, HTTP failure or timeout), the time
 =head1 EXAMPLE
 
 see check_inter_perf.pl in t directory.
+
+=head1 BUGS
+
+=over 4
+
+=item 1 Timeout is B<approximate> and applies independently to image download and HTML - if you ask for S<image download>,
+the timeout is applied to the images and the HTML separately effectively doubling the timeout. 
+
+=item 2 A more flexible approach may be for this module to decorate the super class,
+
+=item 3 Having to supply the list of URLs to the constructor is strange.
+
+=back
 
 =head1 AUTHOR
 

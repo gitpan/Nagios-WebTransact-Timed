@@ -7,7 +7,7 @@ use Getopt::Long;
 use Nagios::WebTransact::Timed ;
 
 my $PROGNAME = 'check_inter_perf.pl' ;
-my ($debug, $verbose, $proxy, $account, $pass, $timeout, $fail_ratio_pct) ;
+my ($debug, $verbose, $proxy, $account, $pass, $timeout, $download_images, $fail_ratio_pct) ;
 
 Getopt::Long::Configure('bundling', 'no_ignore_case') ;
 # Without 'no_ignore_case', -P is clobbered by -p ..
@@ -15,9 +15,10 @@ GetOptions(
         "h|help"        => \&print_usage,
         "d|debug"       => \$debug,
         "v|verbose"     => \$verbose,
+        "D|download_images"     => \$download_images,
         "P|proxy:s"     => \$proxy,
         "A|account:s"   => \$account,
-        "T|timeout:i"   => \$timeout,
+        "T|timeout:f"   => \$timeout,
         "F|fail_ratio_pct:i"   => \$fail_ratio_pct,
         "p|pass:s"      => \$pass,
 ) ;
@@ -73,7 +74,8 @@ my $x = Nagios::WebTransact::Timed->new( \@URLS ) ;
 
 my $cache = $Proxy->{server} ;		# want to set $cache for display
 
-my ($rc, $message, $get_times_ar) =  $x->check( {}, verbose => $verbose, debug => $debug, proxy => $Proxy, timeout => $timeout, fail_ratio_percent => $fail_ratio_pct ) ;
+my ($rc, $message, $get_times_ar) =  $x->check( {}, verbose => $verbose, debug => $debug, proxy => $Proxy, timeout => $timeout,
+						    fail_ratio_percent => $fail_ratio_pct, download_images => $download_images  ) ;
 
 my $get_times_report = &present_get_times( @$get_times_ar) ; ;
 my $trx_report = 'via ' . ( $cache ? "'$cache' " : ' ') . "$message $get_times_report\n" ;
@@ -84,19 +86,21 @@ sub present_get_times() {
 
   my (@get_times) = @_ ; 
   
-  my (@worst_times, @worst_for_print, $avg, $n, $sigma_x, $sigma_x2, $stddev) = () ;
+  my (@worst_times, @worst_for_print, $avg, $n, $sigma_x, $sigma_x2, $stddev) ;
   
   @worst_times = sort { -$a <=> -$b } @get_times ;
   @worst_for_print = splice(@worst_times, 0, 5) ;
   
-  $n = 1 ;
-  foreach (@get_times) {
-    $sigma_x  += $_ ;
-    $sigma_x2 += $_ * $_ ;
+  $n = 0 ;
+  foreach my $t (@get_times) {
+    $sigma_x  += $t ;
+    $sigma_x2 += $t * $t ;
     $n++ ;
   } 
+
   $avg = sprintf("%2.2f", $sigma_x / $n ) ;
-  $stddev = sprintf("%2.2f", sqrt( ($sigma_x2 - $n * $avg * $avg)/($n - 1) ) ) ; 
+  $stddev = ( $n > 1 ? sprintf("%2.2f", sqrt( ($sigma_x2 - $n * $avg * $avg)/($n - 1) ) ) :
+                       'undef' ) ;
   
   return "avg: $avg stddev: $stddev  5 worst: " . join(" ", @worst_for_print) ;
 }
@@ -106,6 +110,7 @@ sub print_usage () {
         print "$PROGNAME [-d | --debug]\n";
         print "$PROGNAME [-v | --verbose]\n";
         print "$PROGNAME [-h | --help]\n";
+        print "$PROGNAME [-D | --download_images] download images in the pages (provided they have not been already fetched)\n";
         print "$PROGNAME [-P | --proxy] name of proxy server. Include :port as a suffix if required eg localhost:3128\n";
         print "$PROGNAME [-A | --account] account to use proxy server\n";
         print "$PROGNAME [-F | --fail_ratio_pct] return a failure if greater than this proportion of URLs fail. Specifed as percentage (%).\n" ;

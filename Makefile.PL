@@ -24,6 +24,7 @@ unless ( -s 't/Nagios_WebTransact_Timed_cache.pl' ) {
 
 WriteMakefile(
     'NAME'	=> 'Nagios::WebTransact::Timed',
-    'PREREQ_PM' => { Time::HiRes => 0, Nagios::WebTransact => 0, LWP => 0 },
+    'PREREQ_PM' => { Time::HiRes => 0, Nagios::WebTransact => 0.14, LWP => 0 },
+    # 'PREREQ_PRINT' => 1,
     'VERSION_FROM' => 'Timed.pm', # finds $VERSION
 );
